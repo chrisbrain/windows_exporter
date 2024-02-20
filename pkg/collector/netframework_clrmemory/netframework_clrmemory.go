@@ -3,6 +3,8 @@
 package netframework_clrmemory
 
 import (
+	"fmt"
+
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -13,13 +15,18 @@ import (
 
 const Name = "netframework_clrmemory"
 
-type Config struct{}
+type Config struct {
+	ProcessName string `yaml:"collectors_dotnet_process"`
+}
 
-var ConfigDefaults = Config{}
+var ConfigDefaults = Config{
+	ProcessName: "",
+}
 
 // A collector is a Prometheus collector for WMI Win32_PerfRawData_NETFramework_NETCLRMemory metrics
 type collector struct {
-	logger log.Logger
+	logger      log.Logger
+	processName *string
 
 	AllocatedBytes                     *prometheus.Desc
 	FinalizationSurvivors              *prometheus.Desc
@@ -38,14 +45,25 @@ type collector struct {
 	PromotedMemoryfromGen1             *prometheus.Desc
 }
 
-func New(logger log.Logger, _ *Config) types.Collector {
-	c := &collector{}
+func New(logger log.Logger, config *Config) types.Collector {
+	if config == nil {
+		config = &ConfigDefaults
+	}
+
+	c := &collector{
+		processName: &config.ProcessName,
+	}
 	c.SetLogger(logger)
 	return c
 }
 
-func NewWithFlags(_ *kingpin.Application) types.Collector {
-	return &collector{}
+func NewWithFlags(app *kingpin.Application) types.Collector {
+	return &collector{
+		processName: app.Flag(
+			"collectors.dotnet.process",
+			"Process or partial process name to match.").
+			Default(ConfigDefaults.ProcessName).String(),
+	}
 }
 
 func (c *collector) GetName() string {
@@ -182,9 +200,23 @@ type Win32_PerfRawData_NETFramework_NETCLRMemory struct {
 
 func (c *collector) collect(ch chan<- prometheus.Metric) (*prometheus.Desc, error) {
 	var dst []Win32_PerfRawData_NETFramework_NETCLRMemory
-	q := wmi.QueryAll(&dst, c.logger)
-	if err := wmi.Query(q, &dst); err != nil {
-		return nil, err
+
+	if *(c.processName) == "" {
+		// fmt.Print("Getting all processes")
+		q := wmi.QueryAll(&dst, c.logger)
+		if err := wmi.Query(q, &dst); err != nil {
+			return nil, err
+		}
+	} else {
+		q := fmt.Sprint("SELECT * FROM Win32_PerfRawData_NETFramework_NETCLRMemory WHERE Name LIKE '%", *c.processName, "%'")
+
+		// fmt.Printf("Getting processes matching '%s'", q)
+
+		err := wmi.Query(q, &dst)
+		if err != nil {
+			//fmt.Printf("Error: %+v\n", err)
+			return nil, err
+		}
 	}
 
 	for _, process := range dst {
